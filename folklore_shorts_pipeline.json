@@ -1,0 +1,892 @@
+﻿{
+  "name": "ðŸŽ¬ Folklore Shorts â€” Autonomous Pipeline v1",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "node-schedule-trigger",
+      "name": "Daily Trigger (6AM UTC)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Genre Randomizer â€” Selects a random folklore genre and legend\nconst genres = [\n  {\n    genre: 'American',\n    regionLabel: 'North American Folklore',\n    exampleLegends: [\n      'The Bell Witch',\n      'Skinwalker Ranch',\n      'The Mothman of Point Pleasant',\n      'Cropsey',\n      'The Bunny Man'\n    ]\n  },\n  {\n    genre: 'European',\n    regionLabel: 'European Dark Folklore',\n    exampleLegends: [\n      'The Beast of GÃ©vaudan',\n      'Spring-Heeled Jack',\n      'The Erlking',\n      'Baba Yaga\\'s Riders',\n      'The Pied Piper (Original)'\n    ]\n  },\n  {\n    genre: 'Mexican',\n    regionLabel: 'Mexican & Latin American Legends',\n    exampleLegends: [\n      'La Llorona',\n      'El Charro Negro',\n      'The Aluxes of YucatÃ¡n',\n      'Nahual Shape-Shifters',\n      'La Isla de las MuÃ±ecas'\n    ]\n  }\n];\n\nconst pick = genres[Math.floor(Math.random() * genres.length)];\nconst legend = pick.exampleLegends[Math.floor(Math.random() * pick.exampleLegends.length)];\nconst runId = new Date().toISOString().replace(/[:.]/g, '-');\n\nreturn [{\n  json: {\n    genre: pick.genre,\n    regionLabel: pick.regionLabel,\n    selectedLegend: legend,\n    allLegends: pick.exampleLegends,\n    runId: runId,\n    basePath: `/tmp/n8n_pipeline/${runId}`\n  }\n}];"
+      },
+      "id": "node-genre-randomizer",
+      "name": "Genre Randomizer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create the pipeline working directory\nconst fs = require('fs');\nconst basePath = $input.first().json.basePath;\nfs.mkdirSync(basePath, { recursive: true });\n\n// Check idempotency â€” skip if legend was already processed today\nconst ledgerPath = '/tmp/n8n_pipeline/upload_ledger.json';\nif (fs.existsSync(ledgerPath)) {\n  const ledger = JSON.parse(fs.readFileSync(ledgerPath, 'utf8'));\n  const today = new Date().toISOString().split('T')[0];\n  const alreadyDone = ledger.some(\n    e => e.legend === $input.first().json.selectedLegend &&\n         e.timestamp.startsWith(today)\n  );\n  if (alreadyDone) {\n    throw new Error(`Legend '${$input.first().json.selectedLegend}' already processed today. Skipping.`);\n  }\n}\n\nreturn $input.all();"
+      },
+      "id": "node-init-workspace",
+      "name": "Init Workspace & Idempotency Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%%GEMINI_API_KEY%%",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [{\n        \"text\": \"You are an elite horror/folklore screenwriter for short-form YouTube content. You write scripts designed for a 4-minute narrated video. Your output MUST be valid JSON.\\n\\nWrite a cinematic 4-minute folklore script about '{{ $json.selectedLegend }}' from {{ $json.regionLabel }}.\\n\\nReturn STRICT JSON with this schema:\\n{\\n  \\\"title\\\": \\\"string â€” dramatic episode title\\\",\\n  \\\"hook\\\": \\\"string â€” 8-word opening hook line\\\",\\n  \\\"script\\\": \\\"string â€” the full narration script (~800-900 words)\\\",\\n  \\\"scenes\\\": [\\n    {\\n      \\\"sceneNumber\\\": number,\\n      \\\"description\\\": \\\"string â€” visual description for AI image generation\\\",\\n      \\\"narration\\\": \\\"string â€” the narration text for this scene\\\",\\n      \\\"mood\\\": \\\"string â€” e.g. dread, mystery, shock\\\",\\n      \\\"durationSeconds\\\": number\\n    }\\n  ],\\n  \\\"totalDurationSeconds\\\": 240\\n}\\n\\nRules:\\n- Exactly 8-12 scenes that sum to ~240 seconds.\\n- Write in second person (You are walking...).\\n- End on a cliffhanger or chilling revelation.\\n- Each scene description must be a detailed, cinematic prompt suitable for an AI image generator.\\n- The hook must be immediately attention-grabbing.\\n- Include at LEAST 2 scenes with extreme tension shifts.\\n\\nReturn ONLY the JSON object, no markdown formatting.\"\n      }]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.85,\n    \"maxOutputTokens\": 4000,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "node-narrative-engine",
+      "name": "Narrative Engine (Gemini)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Gemini LLM response and emit one item per scene with cumulative timestamps\nconst raw = $input.first().json;\nlet script;\n\ntry {\n  // Gemini API response format\n  if (raw.candidates) {\n    const text = raw.candidates[0].content.parts[0].text;\n    script = JSON.parse(text);\n  } else if (raw.choices) {\n    script = JSON.parse(raw.choices[0].message.content);\n  } else {\n    script = raw;\n  }\n} catch (e) {\n  throw new Error(`Failed to parse LLM output as JSON: ${e.message}\\nRaw content: ${JSON.stringify(raw).substring(0, 500)}`);\n}\n\n// Validate\nif (!script.scenes || !Array.isArray(script.scenes)) {\n  throw new Error('LLM output missing \"scenes\" array. Got: ' + JSON.stringify(Object.keys(script)));\n}\nif (script.scenes.length < 6 || script.scenes.length > 14) {\n  console.log(`Warning: Expected 8-12 scenes, got ${script.scenes.length}. Proceeding anyway.`);\n}\n\nconst meta = $('Genre Randomizer').first().json;\nlet cumulativeStart = 0;\n\nconst enrichedScenes = script.scenes.map((scene, i) => {\n  const dur = scene.durationSeconds || 30;\n  const enriched = {\n    ...scene,\n    startTimestamp: cumulativeStart,\n    endTimestamp: cumulativeStart + dur,\n    sceneIndex: i,\n    totalScenes: script.scenes.length,\n    episodeTitle: script.title,\n    episodeHook: script.hook,\n    fullScript: script.script,\n    genre: meta.genre,\n    selectedLegend: meta.selectedLegend,\n    runId: meta.runId,\n    basePath: meta.basePath\n  };\n  cumulativeStart += dur;\n  return enriched;\n});\n\nreturn enrichedScenes.map(s => ({ json: s }));"
+      },
+      "id": "node-script-parser",
+      "name": "Script Parser & Scene Splitter",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Deduplicate: Extract only the first item's full script for voiceover.\n// All scene items share the same fullScript, so we only need one.\nconst first = $input.first().json;\n\nreturn [{\n  json: {\n    fullScript: first.fullScript,\n    episodeTitle: first.episodeTitle,\n    episodeHook: first.episodeHook,\n    runId: first.runId,\n    basePath: first.basePath,\n    genre: first.genre,\n    selectedLegend: first.selectedLegend,\n    totalScenes: first.totalScenes\n  }\n}];"
+      },
+      "id": "node-voiceover-prep",
+      "name": "Voiceover Prep (Deduplicate)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.elevenlabs.io/v1/text-to-speech/pNInz6obpgDQGcFmaJcg",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xi-api-key",
+              "value": "%%ELEVENLABS_API_KEY%%"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Accept",
+              "value": "audio/mpeg"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": \"{{ $json.fullScript }}\",\n  \"model_id\": \"eleven_multilingual_v2\",\n  \"voice_settings\": {\n    \"stability\": 0.60,\n    \"similarity_boost\": 0.80,\n    \"style\": 0.45,\n    \"use_speaker_boost\": true\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "voiceoverBinary"
+            }
+          },
+          "timeout": 180000
+        }
+      },
+      "id": "node-voiceover-synth",
+      "name": "Voiceover Synthesis (ElevenLabs)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Save the voiceover binary to disk\nconst fs = require('fs');\nconst basePath = $input.first().json.basePath || $('Genre Randomizer').first().json.basePath;\nconst voicePath = `${basePath}/voiceover_full.mp3`;\n\n// Get binary data from the previous HTTP Request node\nconst binaryData = $input.first().binary;\nif (binaryData && binaryData.voiceoverBinary) {\n  const buffer = await this.helpers.getBinaryDataBuffer(0, 'voiceoverBinary');\n  fs.writeFileSync(voicePath, buffer);\n} else {\n  throw new Error('No binary voiceover data received from ElevenLabs');\n}\n\nreturn [{\n  json: {\n    voiceoverPath: voicePath,\n    basePath: basePath,\n    status: 'voiceover_saved'\n  }\n}];"
+      },
+      "id": "node-save-voiceover",
+      "name": "Save Voiceover to Disk",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "node-image-batch",
+      "name": "Image Generation Batch",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1100,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.stability.ai/v2beta/stable-image/generate/sd3",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer %%STABILITY_API_KEY%%"
+            },
+            {
+              "name": "Accept",
+              "value": "image/*"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "prompt",
+              "value": "={{ $json.description }}, cinematic 4K, dark atmospheric lighting, horror folklore aesthetic, volumetric fog, {{ $json.mood }} mood, highly detailed, photorealistic, 9:16 vertical composition"
+            },
+            {
+              "name": "negative_prompt",
+              "value": "cartoon, anime, bright colors, cheerful, low quality, blurry, text, watermark"
+            },
+            {
+              "name": "aspect_ratio",
+              "value": "9:16"
+            },
+            {
+              "name": "output_format",
+              "value": "png"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "sceneImage"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "node-image-gen",
+      "name": "Visual Synthesis (Stability AI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Save scene image to disk and add a rate-limit delay\nconst fs = require('fs');\nconst item = $input.first();\nconst basePath = item.json.basePath;\nconst sceneIndex = item.json.sceneIndex;\nconst imagePath = `${basePath}/scene_${sceneIndex}.png`;\n\nconst binaryData = item.binary;\nif (binaryData && binaryData.sceneImage) {\n  const buffer = await this.helpers.getBinaryDataBuffer(0, 'sceneImage');\n  fs.writeFileSync(imagePath, buffer);\n} else {\n  throw new Error(`No binary image data for scene ${sceneIndex}`);\n}\n\n// Rate limit: wait 3 seconds between API calls\nawait new Promise(resolve => setTimeout(resolve, 3000));\n\nreturn [{\n  json: {\n    ...item.json,\n    imagePath: imagePath,\n    imageStatus: 'saved'\n  }\n}];"
+      },
+      "id": "node-save-image",
+      "name": "Save Scene Image & Rate Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-merge-av",
+      "name": "Merge A/V Assets",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        1760,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Asset Manifest Builder\n// Compiles all generated assets into a single manifest for FFMPEG\nconst fs = require('fs');\nconst meta = $('Genre Randomizer').first().json;\nconst scenes = $('Script Parser & Scene Splitter').all();\nconst basePath = meta.basePath;\n\n// Verify all scene images exist\nconst missingFiles = [];\nscenes.forEach((item, i) => {\n  const imgPath = `${basePath}/scene_${i}.png`;\n  if (!fs.existsSync(imgPath)) {\n    missingFiles.push(imgPath);\n  }\n});\n\nconst voicePath = `${basePath}/voiceover_full.mp3`;\nif (!fs.existsSync(voicePath)) {\n  missingFiles.push(voicePath);\n}\n\nif (missingFiles.length > 0) {\n  throw new Error(`Missing required files:\\n${missingFiles.join('\\n')}`);\n}\n\nconst manifest = {\n  runId: meta.runId,\n  basePath: basePath,\n  voiceoverPath: voicePath,\n  scenes: scenes.map((item, i) => ({\n    index: i,\n    imagePath: `${basePath}/scene_${i}.png`,\n    duration: item.json.durationSeconds || 30,\n    startTimestamp: item.json.startTimestamp,\n    endTimestamp: item.json.endTimestamp,\n    description: item.json.description,\n    narration: item.json.narration\n  })),\n  episodeTitle: scenes[0].json.episodeTitle,\n  episodeHook: scenes[0].json.episodeHook,\n  genre: meta.genre,\n  selectedLegend: meta.selectedLegend,\n  masterOutputPath: `${basePath}/master_video.mp4`\n};\n\nreturn [{ json: manifest }];"
+      },
+      "id": "node-asset-manifest",
+      "name": "Asset Manifest Builder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// FFMPEG Master Video Assembly â€” Command Generator\n// Builds the full FFMPEG command to:\n//   1. Convert each still image into a video segment with Ken Burns effect\n//   2. Concatenate all segments\n//   3. Overlay the voiceover audio\n//   4. Output final 9:16 vertical video\n\nconst fs = require('fs');\nconst manifest = $input.first().json;\nconst basePath = manifest.basePath;\nconst fps = 25;\n\n// Step 1: Generate individual scene video commands\nconst sceneVideoCommands = manifest.scenes.map((scene, i) => {\n  const frames = scene.duration * fps;\n  const outputSegment = `${basePath}/segment_${i}.mp4`;\n  \n  // Ken Burns: slow zoom from 1.0 to 1.3 with slight pan\n  const cmd = [\n    'ffmpeg -y',\n    `-loop 1 -i \"${scene.imagePath}\"`,\n    `-t ${scene.duration}`,\n    `-vf \"scale=8000:-1,zoompan=z='min(zoom+0.0008,1.3)'` +\n      `:x='iw/2-(iw/zoom/2)+10*sin(on/100)'` +\n      `:y='ih/2-(ih/zoom/2)'` +\n      `:d=${frames}:s=1080x1920:fps=${fps},` +\n      `format=yuv420p\"`,\n    '-c:v libx264 -preset medium -crf 20',\n    '-an',\n    `\"${outputSegment}\"`\n  ].join(' ');\n  \n  return { cmd, outputSegment, index: i };\n});\n\n// Step 2: Write concat list file\nconst concatListPath = `${basePath}/concat_list.txt`;\nconst concatContent = sceneVideoCommands\n  .map(s => `file '${s.outputSegment}'`)\n  .join('\\n');\nfs.writeFileSync(concatListPath, concatContent);\n\n// Step 3: Build the scene-rendering shell script (runs all segments)\nconst renderScript = sceneVideoCommands.map(s => s.cmd).join(' && ');\n\n// Step 4: Concat + audio overlay command\nconst concatCmd = [\n  'ffmpeg -y',\n  `-f concat -safe 0 -i \"${concatListPath}\"`,\n  `-i \"${manifest.voiceoverPath}\"`,\n  '-c:v libx264 -preset slow -crf 18',\n  '-c:a aac -b:a 192k',\n  '-map 0:v:0 -map 1:a:0',\n  '-shortest',\n  '-movflags +faststart',\n  `\"${manifest.masterOutputPath}\"`\n].join(' ');\n\n// Full pipeline: render all segments, then concat\nconst fullCommand = `${renderScript} && ${concatCmd}`;\n\nreturn [{\n  json: {\n    ...manifest,\n    ffmpegFullCommand: fullCommand,\n    concatListPath: concatListPath,\n    sceneSegments: sceneVideoCommands.map(s => s.outputSegment)\n  }\n}];"
+      },
+      "id": "node-ffmpeg-cmd-gen",
+      "name": "FFMPEG Command Generator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "={{ $json.ffmpegFullCommand }}",
+        "options": {
+          "timeout": 600
+        }
+      },
+      "id": "node-ffmpeg-master",
+      "name": "FFMPEG Master Assembly",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        2420,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pass through manifest data after FFMPEG execution\nconst exitCode = $input.first().json.exitCode;\nconst stderr = $input.first().json.stderr || '';\n\nif (exitCode !== 0) {\n  throw new Error(`FFMPEG Master Assembly failed (exit ${exitCode}):\\n${stderr.substring(0, 1000)}`);\n}\n\n// Carry forward manifest from the command generator\nconst manifest = $('FFMPEG Command Generator').first().json;\nreturn [{ json: manifest }];"
+      },
+      "id": "node-ffmpeg-check",
+      "name": "FFMPEG Exit Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%%GEMINI_API_KEY%%",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [{\n        \"text\": \"You are a YouTube Shorts algorithm expert and narrative tension analyst. You identify the exact moments in a script where a viewer would be most hooked. Return only valid JSON.\\n\\nAnalyze this folklore script and identify the 5-6 best cut points for YouTube Shorts (each Short = 40-60 seconds). Each Short MUST end on a cliffhanger or moment of peak tension.\\n\\nSCENES WITH TIMESTAMPS:\\n{{ JSON.stringify($json.scenes.map(s => ({ start: s.startTimestamp + 's', end: s.endTimestamp + 's', narration: s.narration, description: s.description })), null, 2) }}\\n\\nReturn STRICT JSON:\\n{\\n  \\\"totalDuration\\\": number,\\n  \\\"shorts\\\": [\\n    {\\n      \\\"partNumber\\\": number,\\n      \\\"startSeconds\\\": number,\\n      \\\"endSeconds\\\": number,\\n      \\\"hookLine\\\": \\\"string â€” the cliffhanger this Short ends on\\\",\\n      \\\"tensionScore\\\": number_1to10,\\n      \\\"suggestedTitle\\\": \\\"string\\\"\\n    }\\n  ]\\n}\\n\\nRules:\\n- Shorts must NOT overlap.\\n- Cover the entire ~240s video with minimal gaps.\\n- Order by partNumber ascending.\\n- Each Short must be 40-60 seconds.\\n- First Short starts at 0.\\n- End each Short at PEAK tension, never after resolution.\\n\\nReturn ONLY the JSON object, no markdown formatting.\"\n      }]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.3,\n    \"maxOutputTokens\": 2000,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "node-hook-analyzer",
+      "name": "Hook Analyzer (Gemini)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2860,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// FFMPEG Slice Command Generator\n// Parses Hook Analyzer (Gemini) output and generates one FFMPEG command per Short\n\nconst raw = $input.first().json;\nlet hookData;\n\ntry {\n  // Gemini API response format\n  if (raw.candidates) {\n    const text = raw.candidates[0].content.parts[0].text;\n    hookData = JSON.parse(text);\n  } else if (raw.choices) {\n    hookData = JSON.parse(raw.choices[0].message.content);\n  } else {\n    hookData = raw;\n  }\n} catch (e) {\n  throw new Error(`Failed to parse Hook Analyzer JSON: ${e.message}`);\n}\n\nif (!hookData.shorts || !Array.isArray(hookData.shorts)) {\n  throw new Error('Hook Analyzer output missing \"shorts\" array');\n}\n\nconst manifest = $('FFMPEG Command Generator').first().json;\nconst basePath = manifest.basePath;\nconst masterPath = manifest.masterOutputPath;\n\nconst sliceCommands = hookData.shorts.map((short) => {\n  const duration = short.endSeconds - short.startSeconds;\n  const outputPath = `${basePath}/short_part${short.partNumber}.mp4`;\n\n  const cmd = [\n    'ffmpeg -y',\n    `-ss ${short.startSeconds}`,\n    `-i \"${masterPath}\"`,\n    `-t ${duration}`,\n    '-c:v libx264 -preset medium -crf 20',\n    '-c:a aac -b:a 192k',\n    '-movflags +faststart',\n    // Part number overlay\n    `-vf \"drawtext=text='Part ${short.partNumber}':fontsize=42:fontcolor=white:` +\n      `borderw=3:bordercolor=black:x=30:y=30\"`,\n    `\"${outputPath}\"`\n  ].join(' ');\n\n  return {\n    json: {\n      partNumber: short.partNumber,\n      startSeconds: short.startSeconds,\n      endSeconds: short.endSeconds,\n      duration,\n      hookLine: short.hookLine,\n      tensionScore: short.tensionScore,\n      suggestedTitle: short.suggestedTitle,\n      outputPath,\n      ffmpegCommand: cmd,\n      genre: manifest.genre,\n      selectedLegend: manifest.selectedLegend,\n      episodeTitle: manifest.episodeTitle,\n      episodeHook: manifest.episodeHook,\n      basePath: manifest.basePath,\n      runId: manifest.runId\n    }\n  };\n});\n\nreturn sliceCommands;"
+      },
+      "id": "node-slice-cmd-gen",
+      "name": "Slice Command Generator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3080,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "node-slice-batch",
+      "name": "Shorts Slice Batch",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        3300,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "={{ $json.ffmpegCommand }}",
+        "options": {
+          "timeout": 120
+        }
+      },
+      "id": "node-ffmpeg-slice",
+      "name": "FFMPEG Shorts Slicer",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        3520,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify FFMPEG slice succeeded\nconst exitCode = $input.first().json.exitCode;\nconst stderr = $input.first().json.stderr || '';\nconst prevData = $('Shorts Slice Batch').first().json;\n\nif (exitCode !== 0) {\n  console.log(`FFMPEG slice failed for Part ${prevData.partNumber}: ${stderr.substring(0, 500)}`);\n  // Don't throw â€” continue with other parts\n}\n\nreturn [{ json: { ...prevData, sliceStatus: exitCode === 0 ? 'success' : 'failed' } }];"
+      },
+      "id": "node-slice-check",
+      "name": "Slice Exit Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3740,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%%GEMINI_API_KEY%%",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [{\n        \"text\": \"You are a YouTube SEO specialist. You generate metadata engineered for maximum CTR and discoverability on YouTube Shorts. Return only valid JSON.\\n\\nGenerate YouTube Shorts metadata for Part {{ $json.partNumber }} of a {{ $json.genre }} folklore series about '{{ $json.selectedLegend }}'.\\n\\nEpisode title: '{{ $json.episodeTitle }}'\\nThe hook line for this part is: '{{ $json.hookLine }}'\\n\\nReturn JSON:\\n{\\n  \\\"title\\\": \\\"string â€” max 70 chars, use pattern: Part X: [Hook] | [Legend] #shorts\\\",\\n  \\\"description\\\": \\\"string â€” 150-200 chars, include 2 hashtags, CTA to next part, brief teaser\\\",\\n  \\\"tags\\\": [15-20 tags mixing broad and niche],\\n  \\\"categoryId\\\": \\\"24\\\",\\n  \\\"defaultLanguage\\\": \\\"en\\\"\\n}\\n\\nReturn ONLY the JSON object, no markdown formatting.\"\n      }]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.7,\n    \"maxOutputTokens\": 1000,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "node-seo-engine",
+      "name": "SEO Engine (Gemini)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Gemini SEO metadata and merge with Short data\nconst raw = $input.first().json;\nlet seo;\n\ntry {\n  // Gemini API response format\n  if (raw.candidates) {\n    const text = raw.candidates[0].content.parts[0].text;\n    seo = JSON.parse(text);\n  } else if (raw.choices) {\n    seo = JSON.parse(raw.choices[0].message.content);\n  } else {\n    seo = raw;\n  }\n} catch (e) {\n  throw new Error(`Failed to parse SEO Engine JSON: ${e.message}`);\n}\n\nconst shortData = $('Shorts Slice Batch').first().json;\n\nreturn [{\n  json: {\n    ...shortData,\n    seoTitle: seo.title || `Part ${shortData.partNumber}: ${shortData.selectedLegend} #shorts`,\n    seoDescription: seo.description || `Part ${shortData.partNumber} of the ${shortData.selectedLegend} series.`,\n    seoTags: seo.tags || ['folklore', 'scary stories', '#shorts'],\n    categoryId: seo.categoryId || '24',\n    defaultLanguage: seo.defaultLanguage || 'en'\n  }\n}];"
+      },
+      "id": "node-seo-parser",
+      "name": "SEO Parser",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4180,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Publishing Scheduler\n// Calculates the exact publishAt timestamp for each Short.\n// Strategy: 2 uploads per day at peak US viewership hours.\n//   Slot A: 9:00 AM EST  (14:00 UTC in winter / 13:00 UTC in summer)\n//   Slot B: 4:00 PM EST  (21:00 UTC in winter / 20:00 UTC in summer)\n\nconst items = $input.all();\nconst now = new Date();\n\n// Start publishing tomorrow\nconst publishStartDate = new Date(now);\npublishStartDate.setUTCDate(publishStartDate.getUTCDate() + 1);\npublishStartDate.setUTCHours(0, 0, 0, 0);\n\n// DST detection for US Eastern time\nfunction getESTOffset(date) {\n  const year = date.getUTCFullYear();\n  // Second Sunday of March\n  const marchSecondSunday = new Date(Date.UTC(year, 2, 8));\n  marchSecondSunday.setUTCDate(8 + (7 - marchSecondSunday.getUTCDay()) % 7);\n  // First Sunday of November\n  const novFirstSunday = new Date(Date.UTC(year, 10, 1));\n  novFirstSunday.setUTCDate(1 + (7 - novFirstSunday.getUTCDay()) % 7);\n\n  if (date >= marchSecondSunday && date < novFirstSunday) {\n    return 4; // EDT (UTC-4)\n  }\n  return 5; // EST (UTC-5)\n}\n\nconst scheduledItems = items.map((item, index) => {\n  const dayOffset = Math.floor(index / 2);\n  const slotIndex = index % 2;\n\n  const publishDate = new Date(publishStartDate);\n  publishDate.setUTCDate(publishDate.getUTCDate() + dayOffset);\n\n  const estOffset = getESTOffset(publishDate);\n  const slotHourUTC = slotIndex === 0\n    ? (9 + estOffset)\n    : (16 + estOffset);\n\n  publishDate.setUTCHours(slotHourUTC, 0, 0, 0);\n\n  return {\n    json: {\n      ...item.json,\n      publishAt: publishDate.toISOString(),\n      publishSlot: slotIndex === 0 ? 'Morning (9 AM EST)' : 'Afternoon (4 PM EST)',\n      publishDay: dayOffset + 1,\n      queuePosition: index + 1,\n      totalInQueue: items.length\n    }\n  };\n});\n\nreturn scheduledItems;"
+      },
+      "id": "node-scheduler",
+      "name": "Publishing Scheduler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "node-upload-queue",
+      "name": "Upload Queue",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        4620,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "amount": 5,
+        "unit": "seconds"
+      },
+      "id": "node-wait",
+      "name": "Rate Limit Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        4840,
+        0
+      ],
+      "webhookId": "folklore-wait-webhook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"snippet\": {\n    \"title\": \"{{ $json.seoTitle }}\",\n    \"description\": \"{{ $json.seoDescription }}\",\n    \"tags\": {{ JSON.stringify($json.seoTags) }},\n    \"categoryId\": \"{{ $json.categoryId }}\",\n    \"defaultLanguage\": \"{{ $json.defaultLanguage }}\"\n  },\n  \"status\": {\n    \"privacyStatus\": \"private\",\n    \"publishAt\": \"{{ $json.publishAt }}\",\n    \"selfDeclaredMadeForKids\": false,\n    \"embeddable\": true\n  }\n}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "node-youtube-upload",
+      "name": "YouTube Upload (API v3)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5060,
+        0
+      ],
+      "credentials": {
+        "oAuth2Api": {
+          "id": "%%YOUTUBE_OAUTH_CRED_ID%%",
+          "name": "YouTube OAuth2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Run Ledger & Logging\n// Records each upload for audit trail and idempotency checks\n\nconst fs = require('fs');\nconst item = $input.first().json;\n\nconst logEntry = {\n  timestamp: new Date().toISOString(),\n  legend: item.selectedLegend,\n  genre: item.genre,\n  partNumber: item.partNumber,\n  episodeTitle: item.episodeTitle,\n  seoTitle: item.seoTitle,\n  publishAt: item.publishAt,\n  publishSlot: item.publishSlot,\n  outputPath: item.outputPath,\n  youtubeResponse: item.id || item.videoId || 'PENDING',\n  status: 'UPLOADED'\n};\n\nconst logPath = '/tmp/n8n_pipeline/upload_ledger.json';\nlet ledger = [];\ntry {\n  if (fs.existsSync(logPath)) {\n    ledger = JSON.parse(fs.readFileSync(logPath, 'utf8'));\n  }\n} catch (e) {\n  ledger = [];\n}\n\nledger.push(logEntry);\nfs.writeFileSync(logPath, JSON.stringify(ledger, null, 2));\n\nconsole.log(`[LEDGER] Logged Part ${logEntry.partNumber} of '${logEntry.legend}' â€” scheduled for ${logEntry.publishAt}`);\n\nreturn [{ json: logEntry }];"
+      },
+      "id": "node-ledger",
+      "name": "Run Ledger & Logging",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5280,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Trigger (6AM UTC)": {
+      "main": [
+        [
+          {
+            "node": "Genre Randomizer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Genre Randomizer": {
+      "main": [
+        [
+          {
+            "node": "Init Workspace & Idempotency Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Init Workspace & Idempotency Check": {
+      "main": [
+        [
+          {
+            "node": "Narrative Engine (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Narrative Engine (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "Script Parser & Scene Splitter",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Script Parser & Scene Splitter": {
+      "main": [
+        [
+          {
+            "node": "Voiceover Prep (Deduplicate)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Image Generation Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Voiceover Prep (Deduplicate)": {
+      "main": [
+        [
+          {
+            "node": "Voiceover Synthesis (ElevenLabs)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Voiceover Synthesis (ElevenLabs)": {
+      "main": [
+        [
+          {
+            "node": "Save Voiceover to Disk",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Voiceover to Disk": {
+      "main": [
+        [
+          {
+            "node": "Merge A/V Assets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Image Generation Batch": {
+      "main": [
+        [
+          {
+            "node": "Visual Synthesis (Stability AI)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge A/V Assets",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Visual Synthesis (Stability AI)": {
+      "main": [
+        [
+          {
+            "node": "Save Scene Image & Rate Limit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Scene Image & Rate Limit": {
+      "main": [
+        [
+          {
+            "node": "Image Generation Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge A/V Assets": {
+      "main": [
+        [
+          {
+            "node": "Asset Manifest Builder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Asset Manifest Builder": {
+      "main": [
+        [
+          {
+            "node": "FFMPEG Command Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FFMPEG Command Generator": {
+      "main": [
+        [
+          {
+            "node": "FFMPEG Master Assembly",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FFMPEG Master Assembly": {
+      "main": [
+        [
+          {
+            "node": "FFMPEG Exit Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FFMPEG Exit Check": {
+      "main": [
+        [
+          {
+            "node": "Hook Analyzer (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hook Analyzer (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "Slice Command Generator",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slice Command Generator": {
+      "main": [
+        [
+          {
+            "node": "Shorts Slice Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shorts Slice Batch": {
+      "main": [
+        [
+          {
+            "node": "FFMPEG Shorts Slicer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Publishing Scheduler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FFMPEG Shorts Slicer": {
+      "main": [
+        [
+          {
+            "node": "Slice Exit Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slice Exit Check": {
+      "main": [
+        [
+          {
+            "node": "SEO Engine (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SEO Engine (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "SEO Parser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SEO Parser": {
+      "main": [
+        [
+          {
+            "node": "Shorts Slice Batch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Publishing Scheduler": {
+      "main": [
+        [
+          {
+            "node": "Upload Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Queue": {
+      "main": [
+        [
+          {
+            "node": "Rate Limit Wait",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Run Ledger & Logging",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rate Limit Wait": {
+      "main": [
+        [
+          {
+            "node": "YouTube Upload (API v3)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "YouTube Upload (API v3)": {
+      "main": [
+        [
+          {
+            "node": "Upload Queue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "youtube"
+    },
+    {
+      "name": "automation"
+    },
+    {
+      "name": "folklore"
+    },
+    {
+      "name": "shorts"
+    }
+  ],
+  "triggerCount": 1,
+  "versionId": "1"
+}
